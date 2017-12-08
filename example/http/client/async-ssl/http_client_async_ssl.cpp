@@ -50,6 +50,9 @@ class session : public std::enable_shared_from_this<session>
     http::response<http::string_body> res_;
 
 public:
+
+    std::atomic_bool IsInProgress{false};
+
     // Resolver and stream require an io_service
     explicit
     session(boost::asio::io_service& ios, ssl::context& ctx)
@@ -65,6 +68,8 @@ public:
         char const* port,
         char const* target)
     {
+        IsInProgress = true;
+
         // Set up an HTTP GET request message
         req_.version(11);
         req_.method(http::verb::get);
@@ -117,8 +122,16 @@ public:
     void
     on_handshake(boost::system::error_code ec)
     {
+        IsInProgress = false;
         if(ec)
             return fail(ec, "handshake");
+
+    }
+
+    void
+    write()
+    {
+        IsInProgress = true;
 
         // Send the HTTP request to the remote host
         http::async_write(stream_, req_,
@@ -172,6 +185,8 @@ public:
     void
     on_shutdown(boost::system::error_code ec)
     {
+        IsInProgress = false;
+
         if(ec == boost::asio::error::eof)
         {
             // Rationale:
@@ -212,11 +227,22 @@ int main(int argc, char** argv)
     load_root_certificates(ctx);
 
     // Launch the asynchronous operation
-    std::make_shared<session>(ios, ctx)->run(host, port, target);
+    auto s1 = std::make_shared<session>(ios, ctx);
+    s1->run(host, port, target);
 
     // Run the I/O service. The call will return when
     // the get operation is complete.
-    ios.run();
+    while (s1->IsInProgress)
+    {
+        ios.poll();
+    }
+
+    s1->write();
+
+    while (s1->IsInProgress)
+    {
+        ios.poll();
+    }
 
     return EXIT_SUCCESS;
 }
